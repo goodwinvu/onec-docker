@@ -1,9 +1,8 @@
-ARG DOCKER_USERNAME
 ARG ONEC_VERSION
+ARG DOCKER_USERNAME
 FROM ${DOCKER_USERNAME}/onec-client:${ONEC_VERSION} as base
 
 FROM debian:bullseye-slim
-ARG ONEC_VERSION
 
 COPY --from=base /opt /opt
 
@@ -55,7 +54,7 @@ RUN apt-get update \
   && rm -rf  /etc/apt/sources.list.d/xenial-security.list \
   && apt-get update \
   # Install libwebkitgtk from stretch
-  && echo "deb http://deb.debian.org/debian/ stretch main contrib non-free" > /etc/apt/sources.list.d/stretch.list \
+  && echo "deb http://archive.debian.org/debian/ stretch main contrib non-free" > /etc/apt/sources.list.d/stretch.list \
   && apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     libwebkitgtk-3.0-0 \

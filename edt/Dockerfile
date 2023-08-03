@@ -8,7 +8,7 @@ LABEL maintainer="Nikita Gryzlov <NikGryzlov@1bit.com>, FirstBit"
 
 ARG ONEC_USERNAME
 ARG ONEC_PASSWORD
-ARG EDT_VERSION=2021.3.4
+ARG EDT_VERSION
 
 ENV installer_type=edt \
   ONEC_VERSION=${EDT_VERSION}
@@ -47,8 +47,19 @@ RUN rm ./${downloads}/.gitkeep \
   && ls ${downloads} \
   && for file in ${downloads}/*.tar.gz; do tar -zxf "$file"; done \
   && rm -rf ${downloads}/*.tar.gz \
-  && ./1ce-installer-cli install all --ignore-hardware-checks \
-  && rm -rf /tmp/* \
-  && mv $(dirname $(find /opt/1C/1CE -name ring)) /opt/1C/1CE/components/1c-enterprise-ring
+
+  && ./1ce-installer-cli install all --ignore-hardware-checks --ignore-signature-warnings \
+  && mv $(dirname $(find /opt/1C/1CE -name ring)) /opt/1C/1CE/components/1c-enterprise-ring \
+  && export edt_path=$(dirname $(find /opt/1C/1CE -name 1cedt)) \
+  && echo $edt_path \
+  && rm -f $edt_path/configuration/*.log \
+  && rm -rf $edt_path/configuration/org.eclipse.core.runtime \
+  && rm -rf $edt_path/configuration/org.eclipse.osgi \
+  && rm -rf $edt_path/plugin-development \
+  && rm -f $edt_path/plugins/com._1c.g5.v8.dt.platform.doc_*.jar \
+  && rm -f $edt_path/plugins/com._1c.g5.v8.dt.product.doc_*.jar \
+  && rm -f $edt_path/plugins/org.eclipse.egit.doc_*.jar \
+  && rm -f $edt_path/plugins/org.eclipse.platform.doc_*.jar \
+  && rm -rf /tmp/*
 
 ENV PATH="/opt/1C/1CE/components/1c-enterprise-ring:$PATH"
