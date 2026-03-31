@@ -1,65 +1,132 @@
-ARG DOCKER_USERNAME=library
-ARG BASE_IMAGE=adoptopenjdk
-ARG BASE_TAG=14-hotspot
+# Используем базовый образ для скачивания
+ARG DOWNLOADER_REGISTRY_URL
+ARG DOWNLOADER_IMAGE
+ARG DOWNLOADER_TAG
 
-FROM ${DOCKER_USERNAME}/${BASE_IMAGE}:${BASE_TAG}
+# Для EDT 2025.x ОБЯЗАТЕЛЬНО используем Java 17
+ARG BASE_IMAGE=eclipse-temurin
+ARG BASE_TAG=17-jdk-jammy
+ARG DOCKER_REGISTRY_URL
+
+FROM ${DOWNLOADER_REGISTRY_URL:+"$DOWNLOADER_REGISTRY_URL/"}${DOWNLOADER_IMAGE}:${DOWNLOADER_TAG} AS downloader
+
+# Копирование скрипта скачивания и локальных дистрибутивов
+COPY ./scripts/download_yard.sh /download.sh
+COPY ./distr /distr
+RUN chmod +x /download.sh
+
+# Скачивание дистрибутива 1С с использованием вынесенного скрипта
+ARG ONEC_USERNAME
+ARG ONEC_PASSWORD
+ARG EDT_VERSION=2021.3
+
+WORKDIR /tmp
+
+# Установка необходимых пакетов и генерация локали
+RUN apt-get update \
+  && apt-get install -y \
+  locales \
+  p7zip-rar \
+  p7zip-full \
+  && rm -rf /var/lib/apt/lists/* \
+  && locale-gen ru_RU.UTF-8 \
+  && localedef -i ru_RU -c -f UTF-8 -A /usr/share/locale/locale.alias ru_RU.UTF-8
+
+# Установка переменных окружения для корректной работы локали
+ENV LANG=ru_RU.UTF-8
+ENV LANGUAGE=ru_RU:ru
+ENV LC_ALL=ru_RU.UTF-8
+
+RUN /download.sh "$ONEC_USERNAME" "$ONEC_PASSWORD" "$EDT_VERSION" "edt"
+
+FROM ${BASE_IMAGE}:${BASE_TAG} AS installer
 
 LABEL maintainer="Nikita Gryzlov <NikGryzlov@1bit.com>, FirstBit"
 
-ARG ONEC_USERNAME
-ARG ONEC_PASSWORD
-ARG EDT_VERSION
+ARG EDT_VERSION=2021.3
+ARG downloads=downloads/DevelopmentTools10/${EDT_VERSION}
 
-ENV installer_type=edt \
-  ONEC_VERSION=${EDT_VERSION}
+WORKDIR /tmp
 
-COPY ./scripts/download_og.sh /download_og.sh
+# Устанавливаем системные зависимости и создаем заглушку для getconf
+RUN apt-get update \
+  && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
+  curl \
+  wget \
+  libgtk-3-0 \
+  locales \
+  libc-bin \
+  coreutils \
+  && rm -rf /var/lib/apt/lists/* /var/cache/debconf /tmp/* \
+  && localedef -i ru_RU -c -f UTF-8 -A /usr/share/locale/locale.alias ru_RU.UTF-8 \
+  && echo '#!/bin/sh\nif [ "$1" = "LONG_BIT" ]; then echo "64"; else echo "unknown"; fi' > /usr/local/bin/getconf \
+  && chmod +x /usr/local/bin/getconf
 
+# Копируем дистрибутив из первого стейджа
+COPY --from=downloader /tmp/${downloads} /tmp/${downloads}
+#
+WORKDIR /tmp/${downloads}
+
+# Запуск установки с обходом блокировок Ubuntu 24.04
+RUN chmod -R +x . \
+  && ./1ce-installer-cli install all --ignore-hardware-checks --ignore-signature-warnings \
+  && ln -s $(dirname $(find /opt/1C/1CE -name ring)) /opt/1C/1CE/components/1c-enterprise-ring \
+  && if [ -n "$(find /opt/1C/1CE -name 1cedtcli)" ]; then ln -s $(dirname $(find /opt/1C/1CE -name 1cedtcli)) /opt/1C/1CE/components/1cedtcli; fi \
+  && rm -rf /tmp/* \
+  && if [ ! -f /etc/1C/1CE/ring-commands.cfg ]; then touch /etc/1C/1CE/ring-commands.cfg; fi \
+  && rm /usr/local/bin/getconf
+
+# Запуск установки с обходом блокировок Ubuntu 24.04
+#RUN chmod -R +x . \
+#  && ./1ce-installer-cli install all --ignore-hardware-checks --ignore-signature-warnings \
+#  && ln -s $(dirname $(find /opt/1C/1CE -name ring)) /opt/1C/1CE/components/1c-enterprise-ring \
+#  && if [ -n "$(find /opt/1C/1CE -name 1cedtcli)" ]; then ln -s $(dirname $(find /opt/1C/1CE -name 1cedtcli)) /opt/1C/1CE/components/1cedtcli; fi \
+#  && export edt_path=$(dirname $(find /opt/1C/1CE -name 1cedt)) \
+#  && echo "EDT path: $edt_path" \
+#  && ln -s $edt_path /opt/1C/edt \
+## Установка плагина запрета редактирования
+#  && echo "check_certificate = off" >> ~/.wgetrc \
+#  && wget -P /tmp https://marmyshev.gitlab.io/edt-editing/0.6.0/repo.zip \
+#  && $edt_path/1cedt -clean -purgeHistory \
+#   -application org.eclipse.equinox.p2.director -noSplash \
+#   -repository 'jar:file:/tmp/repo.zip!/' \
+#   -installIUs 'org.mard.dt.editing.feature.feature.group' \
+#  && sed -i -e 's/4096m/8192m/g' $edt_path/1cedt.ini \
+#  && rm -rf /tmp/* \
+#  && if [ ! -f /etc/1C/1CE/ring-commands.cfg ]; then touch /etc/1C/1CE/ring-commands.cfg; fi \
+#  && rm -f $edt_path/configuration/*.log \
+#  && rm -rf $edt_path/configuration/org.eclipse.core.runtime \
+#  && rm -rf $edt_path/configuration/org.eclipse.osgi \
+#  && rm -rf $edt_path/plugin-development \
+#  && rm -f $edt_path/plugins/com._1c.g5.v8.dt.platform.doc_*.jar \
+#  && rm -f $edt_path/plugins/com._1c.g5.v8.dt.product.doc_*.jar \
+#  && rm -f $edt_path/plugins/org.eclipse.egit.doc_*.jar \
+#  && rm -f $edt_path/plugins/org.eclipse.platform.doc_*.jar \
+#  && rm /usr/local/bin/getconf
+
+# 3. ФИНАЛЬНЫЙ ОБРАЗ
+FROM ${BASE_IMAGE}:${BASE_TAG}
+
+LABEL maintainer="Nikita Gryzlov <NikGryzlov@1bit.com>, FirstBit"
 
 WORKDIR /tmp
 
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
-    # downloader dependencies
-    curl \
-    # edt dependencies
-    libgtk-3-0 \
-    locales \
-  && rm -rf  \
-    /var/lib/apt/lists/* \
-    /var/cache/debconf \
-    /tmp/* \
+  curl \
+  libgtk-3-0 \
+  locales \
+  && rm -rf /var/lib/apt/lists/* /var/cache/debconf /tmp/* \
   && localedef -i ru_RU -c -f UTF-8 -A /usr/share/locale/locale.alias ru_RU.UTF-8
 
-ARG downloads=downloads/developmenttools10/${ONEC_VERSION}
-ENV LANG ru_RU.UTF-8
+ENV LANG=ru_RU.UTF-8
+ENV LANGUAGE=ru_RU:ru
+ENV LC_ALL=ru_RU.UTF-8
 
-# Install EDT
-COPY ./distr ./${downloads}
-RUN rm ./${downloads}/.gitkeep \
-  && rm -rf ${downloads}/server*.tar.gz \
-  && rm -rf ${downloads}/deb*.tar.gz \
-  && rm -rf ${downloads}/thin.client*.tar.gz \
-  && if [ -z "$(ls -A ${downloads})" ]; then \
-  chmod +x /download_og.sh \
-  && sync; /download_og.sh; \
-  fi \
-  && ls ${downloads} \
-  && for file in ${downloads}/*.tar.gz; do tar -zxf "$file"; done \
-  && rm -rf ${downloads}/*.tar.gz \
+# Copy EDT
+COPY --from=installer /opt/1C/1CE /opt/1C/1CE
 
-  && ./1ce-installer-cli install all --ignore-hardware-checks --ignore-signature-warnings \
-  && mv $(dirname $(find /opt/1C/1CE -name ring)) /opt/1C/1CE/components/1c-enterprise-ring \
-  && export edt_path=$(dirname $(find /opt/1C/1CE -name 1cedt)) \
-  && echo $edt_path \
-  && rm -f $edt_path/configuration/*.log \
-  && rm -rf $edt_path/configuration/org.eclipse.core.runtime \
-  && rm -rf $edt_path/configuration/org.eclipse.osgi \
-  && rm -rf $edt_path/plugin-development \
-  && rm -f $edt_path/plugins/com._1c.g5.v8.dt.platform.doc_*.jar \
-  && rm -f $edt_path/plugins/com._1c.g5.v8.dt.product.doc_*.jar \
-  && rm -f $edt_path/plugins/org.eclipse.egit.doc_*.jar \
-  && rm -f $edt_path/plugins/org.eclipse.platform.doc_*.jar \
-  && rm -rf /tmp/*
+# Copy ring conf
+COPY --from=installer /etc/1C/1CE/ring-commands.cfg /etc/1C/1CE/ring-commands.cfg
 
-ENV PATH="/opt/1C/1CE/components/1c-enterprise-ring:$PATH"
+ENV PATH="/opt/1C/1CE/components/1c-enterprise-ring:/opt/1C/1CE/components/1cedtcli:/opt/1C/edt:$PATH"

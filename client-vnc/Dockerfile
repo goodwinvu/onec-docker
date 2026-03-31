@@ -1,10 +1,14 @@
+ARG DOCKER_REGISTRY_URL
 ARG ONEC_VERSION
-ARG DOCKER_USERNAME
-FROM ${DOCKER_USERNAME}/onec-client:${ONEC_VERSION} as base
+FROM ${DOCKER_REGISTRY_URL:+"$DOCKER_REGISTRY_URL/"}onec-client:${ONEC_VERSION} AS base
 
-FROM debian:bullseye-slim
+FROM debian:bookworm-slim
+ARG ONEC_VERSION
 
 COPY --from=base /opt /opt
+
+# FIX: remove old libstdc++ shipped with 1C (causes GLIBCXX errors)
+RUN find /opt/1cv8 -name "libstdc++.so*" -delete
 
 ADD https://github.com/just-containers/s6-overlay/releases/download/v1.21.8.0/s6-overlay-amd64.tar.gz /tmp/
 
@@ -24,10 +28,10 @@ RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     dirmngr \
     gnupg \
-  && echo "deb http://http.debian.net/debian/ bullseye main contrib non-free" > /etc/apt/sources.list \
-  && echo "deb http://http.debian.net/debian/ bullseye-backports main" >> /etc/apt/sources.list \
-  && echo "deb http://http.debian.net/debian/ bullseye-proposed-updates main contrib non-free" >> /etc/apt/sources.list \
-  && echo "deb http://security.debian.org/debian-security/ bullseye-security main contrib non-free" >> /etc/apt/sources.list \
+  && echo "deb http://http.debian.net/debian/ bookworm main contrib non-free" > /etc/apt/sources.list \
+  && echo "deb http://http.debian.net/debian/ bookworm-backports main" >> /etc/apt/sources.list \
+  && echo "deb http://http.debian.net/debian/ bookworm-proposed-updates main contrib non-free" >> /etc/apt/sources.list \
+  && echo "deb http://security.debian.org/debian-security/ bookworm-security main contrib non-free" >> /etc/apt/sources.list \
   && echo ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true | debconf-set-selections \
   && apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -42,37 +46,46 @@ RUN apt-get update \
       libodbc1 \
       libtcmalloc-minimal4 \
       libmagickwand-6.q16-6 \
+      libwebkit2gtk-4.0-37 \
       at-spi2-core \
       procps \
       x11vnc \
-  # Install libpng12-0 from xenial
-  && apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys 40976EAF437D05B5 \
-  && echo "deb http://security.ubuntu.com/ubuntu xenial-security main" > /etc/apt/sources.list.d/xenial-security.list \
-  && apt-get update \
-  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      iproute2 \
+      libglu1-mesa \
+  # Install libpng12-0 from debian snapshot
+  && apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys 7638D0442B90D010 8B48AD6246925553 \
+  && echo "deb http://snapshot.debian.org/archive/debian/20160413T160058Z/ unstable main" > /etc/apt/sources.list.d/debian-snapshot.list \
+  && apt-get -o Acquire::AllowInsecureRepositories=true -o Acquire::Check-Valid-Until=false update \
+  && DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-unauthenticated --no-install-recommends \
+      usrmerge \
       libpng12-0 \
-  && rm -rf  /etc/apt/sources.list.d/xenial-security.list \
+  && rm -rf /etc/apt/sources.list.d/debian-snapshot.list \
   && apt-get update \
   # Install libwebkitgtk from stretch
   && echo "deb http://archive.debian.org/debian/ stretch main contrib non-free" > /etc/apt/sources.list.d/stretch.list \
   && apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     libwebkitgtk-3.0-0 \
-  && rm -rf  /etc/apt/sources.list.d/stretch.list \
+  && rm -rf /etc/apt/sources.list.d/stretch.list \
   && apt-get update \
-  && rm -rf  \
+  && rm -rf \
     /var/lib/apt/lists/* \
     /var/cache/debconf \
   && localedef -i ru_RU -c -f UTF-8 -A /usr/share/locale/locale.alias ru_RU.UTF-8
-ENV LANG ru_RU.UTF-8
+
+ENV LANG=ru_RU.UTF-8
+
+# Fix WebKit / GTK issues in containers
+ENV QT_X11_NO_MITSHM=1
 
 # remove DST Root CA X3 cert if it exists
 COPY ./scripts/remove-dst-root-ca-x3.sh /remove-dst-root-ca-x3.sh
+
 RUN chmod +x /remove-dst-root-ca-x3.sh \
   && /remove-dst-root-ca-x3.sh \
   && rm /remove-dst-root-ca-x3.sh
 
-RUN tar xzf /tmp/s6-overlay-amd64.tar.gz -C / \
+RUN tar xzfh /tmp/s6-overlay-amd64.tar.gz -C / \
   && rm -rf /tmp/s6-overlay-amd64.tar.gz
 
 RUN groupadd -r usr1cv8 --gid=2001 \
